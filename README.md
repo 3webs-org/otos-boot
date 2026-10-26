@@ -26,18 +26,28 @@ repo's README for the protocol itself), not two different protocols:
   genuinely bare-metal board is another target of the same project, using
   the same compile-time-fixed-description approach.
 
-Both hand the kernel the identical four values (a real FDT for standard-
-protocol compatibility, the two opaque Cap'n Proto object pointers, and
-the resolved entry point) -- so `saski`'s kernel has exactly one receiving
-code path regardless of which bootloader got it there.
+Both hand the kernel the identical five values (a real FDT for
+standard-protocol compatibility on aarch64, the two opaque Cap'n Proto
+object pointers, the SaskiBootParams pointer, and the resolved entry
+point) -- so `saski`'s kernel has exactly one receiving code path
+regardless of which bootloader got it there. The full contract,
+including the exact register mapping per architecture, is defined in
+[`include/boot_protocol.h`](include/boot_protocol.h), vendored here
+from [`otos-coreinit`](https://github.com/3webs-org/otos-coreinit), the
+canonical owner -- see `otos-grub`'s README for a summary of the same
+header, which applies here identically since both projects implement
+one shared wire format. `include/capnp_list.h` is the matching
+encoder (`capnp_build_list_root`) for the two real Cap'n Proto objects
+(MachineDescription, InitDescription) -- same file, same reasoning as
+`otos-grub`'s copy.
 
 ## Status: design stage, not yet implemented
 
-This repository is currently scaffolding only. See `otos-grub`'s README
-for what's shared and still undecided (the Cap'n Proto schema field
-lists, which repo hosts them, the Mach-O entry-point convention, x86_64's
-register mapping) -- all of that applies here identically, since both
-projects must agree on the same wire format.
+This repository is currently scaffolding only -- the protocol contract
+above is resolved and vendored, but nothing here yet actually builds a
+real MachineDescription for a specific board, or implements the EFI or
+bare-metal entry stub that would use it. That implementation is the
+next step, not done here.
 
 Additional open questions specific to this project, not yet resolved:
 - How the compile-time machine-description object is actually produced
