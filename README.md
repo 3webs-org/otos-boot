@@ -41,19 +41,72 @@ encoder (`capnp_build_list_root`) for the two real Cap'n Proto objects
 (MachineDescription, InitDescription) -- same file, same reasoning as
 `otos-grub`'s copy.
 
-## Status: design stage, not yet implemented
+## Status: one real, working target -- aarch64 QEMU virt EFI
 
-This repository is currently scaffolding only -- the protocol contract
-above is resolved and vendored, but nothing here yet actually builds a
-real MachineDescription for a specific board, or implements the EFI or
-bare-metal entry stub that would use it. That implementation is the
-next step, not done here.
+`tools/build-stub.py` builds a complete, tested EFI stub for exactly
+the target `saski/tools/qemu-boot-aarch64.sh` already exercises
+(QEMU's `virt` machine, GICv3, AAVMF firmware), verified end to end:
+boots real AAVMF, copies saski's own kernel image and coreinit's
+*real* Mach-O (flattened by `tools/macho_flatten.py` -- actual
+`LC_SEGMENT_64`/`LC_MAIN` parsing, not a placeholder) to their link
+addresses, builds and places real `MachineDescription`/
+`InitDescription`/`SaskiBootParams` objects (QEMU virt's own real
+memory map -- UART `0x9000000`, GICv3 distributor `0x8000000`,
+redistributor region `0x80a0000`/`0xf60000`, PSCI method `hvc` --
+verified against QEMU's own DTB output, not recalled from memory),
+turns the MMU off, and jumps to saski's new `boot_protocol_start`
+entry point, which jumps to coreinit directly with no `macho_load`
+call at all. coreinit boots to steady state -- every self-test
+(job_exec, priority preemption, cross-core-signal, pagefault/COW)
+passes.
+
+What this specific target does NOT yet do: bring up more than the BSP
+(the `MachineDescription` this build produces declares one core;
+`SaskiBootParams`'s own AP pool is sized and reserved but nothing
+bump-allocates from it yet -- that's saski's own side, scoped out of
+this pass same as everywhere else in this project's boot-protocol
+work), and `build-stub.py`'s own QEMU-virt field values are specific
+to that one target, not yet generalized into a per-board description
+format.
+
+- `arch/aarch64/qemu_virt_stub.S` -- the stub itself, real assembly
+  (not hand-encoded opcodes -- see the file's own top comment on why
+  this diverges from `mkstub.py`'s original approach), assembled by a
+  real toolchain. Three fixed destinations it copies to at runtime
+  (its own position is firmware's choice, not fixed): saski's own
+  kernel image, the three boot-protocol objects, and coreinit's
+  flattened Mach-O.
+- `tools/macho_flatten.py` -- reads a real Mach-O's `LC_SEGMENT_64`
+  segments and `LC_MAIN` entry point into one flat, ready-to-copy
+  image. The one piece of actual Mach-O parsing this protocol's
+  loader side needs for coreinit, now that saski's own
+  `boot_protocol_start` no longer calls `macho_load` itself.
+  Excludes `__PAGEZERO` and `__LINKEDIT` by name (not by a filesize
+  heuristic -- an earlier version of this function got that wrong:
+  `__LINKEDIT` has a nonzero filesize too, and including it silently
+  pulled symbol-table bytes into the runtime image as if they were
+  BSS).
+- `tools/encode_boot_protocol.py` -- Python port of
+  `include/capnp_list.h`'s encoder. Cross-checked against
+  otos-coreinit's own C decoder byte-for-byte
+  (`tools/test_encode_boot_protocol.py`), not just internally
+  self-consistent.
+- `tools/build-stub.py` -- orchestrates all of the above into one
+  `.efi` file. QEMU virt's own field values live here, not in the
+  shared headers, since they're this one target's own facts, not part
+  of the protocol.
 
 Additional open questions specific to this project, not yet resolved:
 - How the compile-time machine-description object is actually produced
-  for a given target board (by hand, or generated from some simpler
-  per-board description).
+  for a *different* target board (by hand, same as this one, or
+  generated from some simpler per-board description) -- this repo has
+  exactly one target so far, so there's no second data point yet to
+  generalize from.
 - The exact boundary between the EFI target and a genuinely bare-metal
-  target -- how much of the loader logic (Mach-O segment placement, entry
-  resolution) is shared code with only the entry stub and memory-map
-  discovery differing per target.
+  target -- how much of the loader logic (now proven out for EFI --
+  `macho_flatten.py`, `encode_boot_protocol.py`, the three-destination
+  copy pattern in `qemu_virt_stub.S`) is shared code with only the
+  entry stub and memory-map discovery differing per target.
+- Bringing up more than the BSP under this protocol (SaskiBootParams's
+  own AP pool exists and is reserved on the coreinit side, but nothing
+  allocates from it yet -- real, separate follow-on work).
