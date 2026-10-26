@@ -4,7 +4,7 @@ a known base address.
 
 otos-boot's whole model is "the loader does the Mach-O parsing the
 bootloader usually leaves to the kernel" (see ../README.md and
-otos-coreinit's own include/boot_protocol.h: "x4 = init's already-
+otos-coreinit's own include/boot_protocol.h: "x1 = init's already-
 resolved entry point"). For coreinit specifically this is the one real
 piece of actual Mach-O parsing this project's new boot protocol needs
 on the loader side -- saski's own entry point no longer calls

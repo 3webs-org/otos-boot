@@ -41,7 +41,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 from encode_boot_protocol import (
-    build_machine_description, build_saski_boot_params,
+    build_boot_allocator,
     build_init_description, BOOT_PROTO_ARCH_AARCH64,
 )
 from macho_flatten import read_macho_image
@@ -64,13 +64,12 @@ GICR_BASE = 0x80a0000
 GICR_SIZE = 0xf60000
 PSCI_USE_HVC = 1
 
-# ---- otos-coreinit/include/smp_layout.h's own BOOT_PROTO_OBJECTS_BASE/
-# SASKI_AP_POOL_BASE (aarch64) -- kept in sync by hand, same as every
+# ---- otos-coreinit/include/smp_layout.h's BOOT_ALLOCATOR_REGION (aarch64)
 # other cross-repo wire-shape constant in this project; see that
 # header's own comment for why these specific addresses. ----
-BOOT_PROTO_OBJECTS_BASE = 0x41880000
-SASKI_AP_POOL_BASE = 0x41890000
-SASKI_AP_POOL_LEN = 0x00100000
+BOOT_ALLOCATOR_REGION_BASE = 0x41880000
+BOOT_ALLOCATOR_REGION_LEN = 0x00110000
+ALLOCATOR_SRC = os.path.join(HERE, "..", "include", "boot_allocator_aarch64.S")
 
 
 def nm_symbol_address(binary_path, symbol):
@@ -110,30 +109,48 @@ def main():
     coreinit_entry, coreinit_base, coreinit_image = read_macho_image(
         coreinit_macho_path)
 
-    md = build_machine_description(
-        arch_tag=BOOT_PROTO_ARCH_AARCH64, ram_size=RAM_SIZE,
-        free_memory_base=0, free_memory_len=0,  # not wired up this pass
-        fdt_blob_phys=DTB_PHYS, early_rsdp_phys=0, uart_base=UART_BASE,
-        lapic_base=0, gicd_base=GICD_BASE, gicr_base=GICR_BASE,
-        gicr_size=GICR_SIZE, gic_cpu_base=0, gic_is_v2=0, timer_freq_hz=0,
-        psci_use_hvc=PSCI_USE_HVC, cores=[(0, 1)])  # BSP only, this pass
-    init_desc = build_init_description([
+    variants = [
         (BOOT_PROTO_ARCH_AARCH64, kernel_dst, len(kernel_bytes),
          coreinit_base, len(coreinit_image)),
-    ])
-    sbp = build_saski_boot_params(saski_pool_base=SASKI_AP_POOL_BASE,
-                                  saski_pool_len=SASKI_AP_POOL_LEN)
-
-    md_dest = BOOT_PROTO_OBJECTS_BASE
-    id_dest = md_dest + len(md)
-    sbp_dest = id_dest + len(init_desc)
-    bpo_blob = md + init_desc + sbp
-    if sbp_dest + len(sbp) - BOOT_PROTO_OBJECTS_BASE > 0x10000:
-        sys.exit("boot-protocol objects overflow BOOT_PROTO_OBJECTS_SIZE "
-                "(64 KiB) -- shrink them or grow that reservation in "
-                "smp_layout.h")
+    ]
+    # The allocator address is stored in InitDescription itself. Its
+    # value cannot affect the encoded size: the field is always one
+    # fixed-width UInt64 data word. Build once with a placeholder to
+    # determine the following aligned address, then fill that word.
+    init_desc = build_init_description(variants, 0)
+    id_dest = BOOT_ALLOCATOR_REGION_BASE
 
     with tempfile.TemporaryDirectory() as tmp:
+        allocator_obj = os.path.join(tmp, "allocator.o")
+        allocator_bin = os.path.join(tmp, "allocator.bin")
+        subprocess.run([cc, "--target=aarch64-none-elf", "-c", ALLOCATOR_SRC,
+                        "-o", allocator_obj], check=True)
+        alloc_off = nm_symbol_address(allocator_obj, "otos_bump_alloc")
+        finalize_off = nm_symbol_address(allocator_obj, "otos_bump_finalize")
+        subprocess.run([objcopy_tool, "-O", "binary", allocator_obj,
+                        allocator_bin], check=True)
+        allocator_code = open(allocator_bin, "rb").read()
+        allocator_dest = (id_dest + len(init_desc) + 7) & ~7
+        final_init_desc = build_init_description(variants, allocator_dest)
+        if len(final_init_desc) != len(init_desc):
+            sys.exit("InitDescription size changed when allocator address "
+                     "was filled; refusing an overlapping layout")
+        init_desc = final_init_desc
+        if allocator_dest < id_dest + len(init_desc):
+            sys.exit("InitDescription overlaps the boot allocator")
+        code_dest = (allocator_dest + 72 + 15) & ~15
+        stack_bottom = (code_dest + len(allocator_code) + 15) & ~15
+        entry_stack_top = stack_bottom + 0x10000
+        used = entry_stack_top - BOOT_ALLOCATOR_REGION_BASE
+        allocator = build_boot_allocator(
+            alloc=code_dest + alloc_off, finalize=code_dest + finalize_off,
+            region_base=BOOT_ALLOCATOR_REGION_BASE,
+            region_len=BOOT_ALLOCATOR_REGION_LEN, used=used)
+        bpo_blob = (init_desc + bytes(allocator_dest - id_dest - len(init_desc))
+                    + allocator + bytes(code_dest - allocator_dest - len(allocator))
+                    + allocator_code)
+        if len(bpo_blob) > BOOT_ALLOCATOR_REGION_LEN:
+            sys.exit("boot allocator metadata/code overflow its region")
         kernel_bin_path = os.path.join(tmp, "kernel.bin")
         bpo_bin_path = os.path.join(tmp, "bpo.bin")
         coreinit_bin_path = os.path.join(tmp, "coreinit.bin")
@@ -153,9 +170,9 @@ def main():
             "COREINIT_LEN": hex(len(coreinit_image)),
             "COREINIT_BIN_PATH": f'"{coreinit_bin_path}"',
             "DTB_PHYS": hex(DTB_PHYS),
-            "MD_DEST": hex(md_dest),
             "ID_DEST": hex(id_dest),
-            "SBP_DEST": hex(sbp_dest),
+            "ALLOCATOR_DEST": hex(allocator_dest),
+            "ENTRY_STACK_TOP": hex(entry_stack_top),
             "INIT_ENTRY": hex(coreinit_entry),
             "BOOT_PROTOCOL_START": hex(boot_protocol_start),
         }

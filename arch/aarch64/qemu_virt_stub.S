@@ -47,8 +47,8 @@ copy_kernel:
     b    copy_kernel
 copy_kernel_done:
 
-    /* Copy the embedded boot-protocol objects (MachineDescription +
-     * InitDescription + SaskiBootParams, concatenated by
+    /* Copy the embedded boot-protocol objects (InitDescription +
+     * coreinit allocator object/code, concatenated by
      * tools/build-stub.py in that order) to their own fixed
      * destination -- same reasoning, same technique, as the kernel
      * copy above: these need to still be valid memory once saski (at
@@ -57,7 +57,7 @@ copy_kernel_done:
     adrp x15, bpo_data
     add  x15, x15, :lo12:bpo_data
     ldr  x16, =BPO_LEN
-    ldr  x17, =MD_DEST
+    ldr  x17, =ID_DEST
 copy_bpo:
     cbz  x16, copy_bpo_done
     ldrb w19, [x15], #1
@@ -110,20 +110,18 @@ mmu_off_done:
     dsb  sy
     isb
 
-    /* The new boot protocol's own five values (see
-     * otos-coreinit/include/boot_protocol.h): x0 = DTB, x1 =
-     * MachineDescription's own fixed destination, x2 =
-     * InitDescription's, x3 = SaskiBootParams's, x4 = init's
-     * already-resolved entry point. x6 holds the branch target
+    /* The new boot protocol's three values (see
+     * otos-coreinit/include/boot_protocol.h): x0 = raw DTB, x1 = init's
+     * already-resolved entry point, x2 = InitDescription. x6 holds the branch target
      * (saski's own boot_protocol_start) only as a scratch register --
      * it is not part of the protocol itself, which is why it is not
-     * x0-x4. */
+     * x0-x2. */
     ldr  x0, =DTB_PHYS
-    ldr  x1, =MD_DEST
+    ldr  x1, =INIT_ENTRY
     ldr  x2, =ID_DEST
-    ldr  x3, =SBP_DEST
-    ldr  x4, =INIT_ENTRY
     ldr  x6, =BOOT_PROTOCOL_START
+    ldr  x9, =ENTRY_STACK_TOP
+    mov  sp, x9
     br   x6
 
 .balign 16

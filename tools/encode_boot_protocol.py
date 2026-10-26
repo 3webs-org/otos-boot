@@ -41,47 +41,26 @@ def build_list_root(data_words, elements, elem_data_words):
 
 # ---- boot_protocol.h field layouts (keep in exact sync by hand) ----
 
-MACHINE_DESCRIPTION_MAGIC = 0x4D414348494E4544  # "MACHINED"
 INIT_DESCRIPTION_MAGIC = 0x494E495444455343  # "INITDESC"
-SASKI_BOOT_PARAMS_MAGIC = 0x53414B4942504D31  # "SAKIBPM1"
+BOOT_ALLOCATOR_MAGIC = 0x424F4F54414C4F43  # "BOOTALOC"
 
 BOOT_PROTO_ARCH_X86_64 = 0
 BOOT_PROTO_ARCH_AARCH64 = 1
 
 
-def build_machine_description(*, arch_tag, ram_size, free_memory_base,
-                              free_memory_len, fdt_blob_phys,
-                              early_rsdp_phys, uart_base, lapic_base,
-                              gicd_base, gicr_base, gicr_size,
-                              gic_cpu_base, gic_is_v2, timer_freq_hz,
-                              psci_use_hvc, cores):
-    """cores: list of (target, enabled) pairs -- see struct core_entry."""
-    data_words = [
-        MACHINE_DESCRIPTION_MAGIC, arch_tag, ram_size, free_memory_base,
-        free_memory_len, fdt_blob_phys, early_rsdp_phys, uart_base,
-        lapic_base, gicd_base, gicr_base, gicr_size, gic_cpu_base,
-        gic_is_v2, timer_freq_hz, psci_use_hvc,
-    ]
-    assert len(data_words) == 16  # BOOT_PROTO_MD_DATA_WORDS
-    elements = []
-    for target, enabled in cores:
-        elements += [target, enabled]
-    return build_list_root(data_words, elements, 2)  # BOOT_PROTO_CORE_ENTRY_WORDS
-
-
-def build_init_description(variants):
+def build_init_description(variants, coreinit_allocator_phys):
     """variants: list of (arch_tag, kernel_macho_phys, kernel_macho_len,
     init_macho_phys, init_macho_len) -- see struct init_variant."""
     elements = []
     for v in variants:
         assert len(v) == 5  # BOOT_PROTO_INIT_VARIANT_WORDS
         elements += list(v)
-    return build_list_root([INIT_DESCRIPTION_MAGIC], elements, 5)
+    return build_list_root(
+        [INIT_DESCRIPTION_MAGIC, coreinit_allocator_phys], elements, 5)
 
 
-def build_saski_boot_params(*, saski_pool_base, saski_pool_len):
-    """Plain struct, not Cap'n Proto -- see struct saski_boot_params's
-    own comment in boot_protocol.h for why. Field order must match
-    exactly."""
-    return struct.pack("<QQQ", SASKI_BOOT_PARAMS_MAGIC, saski_pool_base,
-                       saski_pool_len)
+def build_boot_allocator(*, alloc, finalize, region_base, region_len, used):
+    """Flat seven-word Cap'n Proto boot_allocator object."""
+    return struct.pack(
+        "<IIQ7Q", 0, 8, 7 << 32, BOOT_ALLOCATOR_MAGIC, alloc, finalize,
+        region_base, region_len, used, 0)
